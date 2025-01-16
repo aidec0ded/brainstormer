@@ -18,11 +18,26 @@ def clear_conversation_collection():
             ids=results['ids']
         )
 
-# Create or get a collection for storing the conversation
-conversation_collection = chroma_client.get_or_create_collection(name="conversation_history")
+# Create or get collections with adjusted HNSW parameters
+conversation_collection = chroma_client.get_or_create_collection(
+    name="conversation_history",
+    metadata={
+        "hnsw:space": "cosine", 
+        "hnsw:M": 64,  # Increased to 64
+        "hnsw:ef_construction": 200,  # Increased for better accuracy
+        "hnsw:ef_search": 100  # Added explicit search parameter
+    }
+)
 
-# Create a dedicated persona collection
-persona_collection = chroma_client.get_or_create_collection(name="persona_library")
+persona_collection = chroma_client.get_or_create_collection(
+    name="persona_library",
+    metadata={
+        "hnsw:space": "cosine", 
+        "hnsw:M": 64,  # Increased to 64
+        "hnsw:ef_construction": 200,  # Increased for better accuracy
+        "hnsw:ef_search": 100  # Added explicit search parameter
+    }
+)
 
 def get_openai_embedding(text: str) -> list:
     """
@@ -217,21 +232,30 @@ def auto_select_personas_based_on_idea(user_idea):
     print(f"Automatically selected personas: {selected_personas}")
     return selected_personas
 
+PERSONA_CACHE = {}  # { persona_name: persona_desc }
+
 def retrieve_persona_by_name(persona_name: str) -> str:
     """
-    Fetches the persona description from the persona_library collection, using metadata filtering.
+    Fetches the persona description from the persona_library collection.
+    Uses a cache to avoid repeated queries.
     """
-    # A simple approach is to iterate over the collection or filter by 'persona_name'
-    # Chroma doesn't have a direct "where" filter on metadata just yet, so we could do a similarity
-    # search with the name, or keep a local dictionary for direct name-based lookup.
     
-    # Let's do a naive similarity search:
+    if persona_name in PERSONA_CACHE:
+        # Already fetched in this session
+        return PERSONA_CACHE[persona_name]
+
+    # Perform a naive similarity search:
     emb = get_openai_embedding(persona_name)
     results = persona_collection.query(query_embeddings=[emb], n_results=1)
-    # Return the top doc
+    
     if results and results['documents']:
-        return results['documents'][0][0]  # first doc of first query
-    return ""
+        persona_desc = results['documents'][0][0]  # first doc of first query
+    else:
+        persona_desc = ""
+    
+    # Store in cache for future lookups
+    PERSONA_CACHE[persona_name] = persona_desc
+    return persona_desc
 
 def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=3):
     """
