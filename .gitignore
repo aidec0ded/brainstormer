@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment directories
+venv/
+.env/
+.venv/
+HOME/
+.pyenv/
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# OS or Editor files
+.DS_Store
+Thumbs.db
+
+# Chroma DB files
+chroma_db/
+*.duckdb
+
+# Env files if you store secrets
+.env
+
+# Logs
+*.log

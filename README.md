@@ -55,6 +55,6 @@ Rules to exclude environment files, Chroma DB data, etc.
 You’re reading it!
 
 **Customization**
-* **Adding Personas**: Update personas.py with your new entries (name, desc, domain expertise, etc.).
-* **Changing LLM Model**: Adjust the model parameter in app.py for your ChatCompletion calls.
-* **Modifying Summaries**: If you want shorter or more detailed final output, tweak your prompt in synthesize_final_output.
+* **Adding Personas**: Update `personas.py` with your new entries (name, desc, domain expertise, etc.).
+* **Changing LLM Model**: Adjust the model parameter in app.py for your `ChatCompletion` calls.
+* **Modifying Summaries**: If you want shorter or more detailed final output, tweak your prompt in `synthesize_final_output`.
