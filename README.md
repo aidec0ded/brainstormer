@@ -1,4 +1,4 @@
-# Brainstorming App
+# Brainstormer
 
 A Python-based application that facilitates **multi-persona** brainstorming sessions using **OpenAI** and **ChromaDB**. This app allows you to:
 

@@ -2,6 +2,7 @@ from openai import OpenAI
 import chromadb
 import uuid 
 import datetime
+import logging
 from personas import PERSONA_LIBRARY
 
 # Initialize OpenAI client
@@ -11,6 +12,9 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 SESSION_COLLECTION = None
 SESSION_ID = None
+
+# Create a new or existing archive collection:
+archive_collection = chroma_client.get_or_create_collection(name="all_session_archives")
 
 def is_persona_collection_current():
     """
@@ -53,6 +57,11 @@ def create_new_conversation_collection():
 def initialize_persona_collection():
     """Initialize or update collections as needed."""
     global persona_collection
+
+    # Temporarily disable ChromaDB logging
+    chromadb_logger = logging.getLogger('chromadb')
+    original_level = chromadb_logger.level
+    chromadb_logger.setLevel(logging.ERROR)  # Only show errors
     
     # Check persona collection
     if not is_persona_collection_current():
@@ -76,6 +85,9 @@ def initialize_persona_collection():
     else:
         print("Using existing persona collection...")
         persona_collection = chroma_client.get_collection(name="persona_library")
+
+    # Restore original logging level
+    chromadb_logger.setLevel(original_level)
 
 def get_openai_embedding(text: str) -> list:
     """
@@ -178,6 +190,50 @@ def store_personas_in_chroma(personas):
             metadatas=[metadata],
             ids=[doc_id]
         )
+
+def store_archive_message(persona_name, message):
+    """
+    Stores message in the 'all_session_archives' collection.
+    We call this AFTER the session is done or as the session proceeds.
+    """
+    global SESSION_ID
+    if not SESSION_ID:
+        return  # or handle error
+    
+    emb = get_openai_embedding(message)
+    doc_id = str(uuid.uuid4())
+
+    metadata = {
+        "session_id": SESSION_ID,
+        "persona_name": persona_name
+    }
+
+    archive_collection.add(
+        documents=[message],
+        embeddings=[emb],
+        metadatas=[metadata],
+        ids=[doc_id]
+    )
+
+def search_previous_sessions(user_query, k=5):
+    """
+    Searches the entire archives for relevant conversation snippets.
+    """
+    emb = get_openai_embedding(user_query)
+    results = archive_collection.query(query_embeddings=[emb], n_results=k)
+
+    # results['documents'] is a list of lists (one per query)
+    docs = results['documents'][0] if results and results['documents'] else []
+    metas = results['metadatas'][0] if results and results['metadatas'] else []
+
+    # Show them to the user
+    print("\n--- Relevant Past Ideas/Sessions ---")
+    for i, doc in enumerate(docs):
+        meta = metas[i]
+        sid = meta.get("session_id")
+        persona = meta.get("persona_name")
+        print(f"\nMatch {i+1}: from session {sid}, persona {persona}")
+        print(f"Snippet: {doc[:200]}...")
 
 def select_personas_by_list():
     # Display all available personas with short bios
@@ -405,16 +461,19 @@ def main():
     # STEP 1: Create a new conversation collection
     create_new_conversation_collection()
     
-    # Initialize collections (only recreates what's necessary)
+    # STEP 2: Initialize collections (only recreates what's necessary)
     initialize_persona_collection()
 
-    # Step 2: Store the extended persona definitions (only once, or when updated; uncomment when needing to update).
-    store_personas_in_chroma(PERSONA_LIBRARY)
+    # STEP 3: Ask user if they want to search old sessions first
+    do_search = input("Would you like to search past sessions for inspiration? (y/n)\n> ")
+    if do_search.lower().startswith('y'):
+        query = input("What would you like to search for?\n> ")
+        search_previous_sessions(query)
     
-    # Step 3: Ask the user for the idea.
+    # Step 4: Ask the user for the idea.
     user_idea = input("What's your idea?\n> ")
 
-    # Step 4: Ask how they want to select personas
+    # Step 5: Ask how they want to select personas
     print("How would you like to select personas?")
     print("1. List all available personas and pick any number")
     print("2. Describe what you're looking for, and we'll do a semantic search")
@@ -438,7 +497,7 @@ def main():
         print("No personas selected. Exiting.")
         return
 
-    # Step 5: Run the brainstorming loop
+    # Step 6: Run the brainstorming loop
     conversation_history = run_brainstorming_with_personas(
         persona_names=selected_personas,
         idea=user_idea,
@@ -446,7 +505,7 @@ def main():
         k=3
     )
 
-    # Step 6: Print out the final conversation in round-robin order
+    # Step 7: Print out the final conversation in round-robin order
     # Get the number of turns from the first persona's history
     total_turns = len(conversation_history[selected_personas[0]])
     num_personas = len(selected_personas)
@@ -465,7 +524,7 @@ def main():
             print(f"\n{persona_name}, Turn {round_number + 1}:")
             print(f"{conversation_history[persona_name][round_number]}\n")
 
-    # Step 7. Synthesize final output
+    # Step 8. Synthesize final output
     final_output = synthesize_final_output(conversation_history, selected_personas, user_idea)
     print("\n=== FINAL OUTPUT ===")
     print(final_output)
