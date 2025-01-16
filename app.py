@@ -1,6 +1,7 @@
 from openai import OpenAI
 import chromadb
 import uuid 
+import datetime
 from personas import PERSONA_LIBRARY
 
 # Initialize OpenAI client
@@ -8,6 +9,8 @@ client = OpenAI()
 # Initialize Chroma client
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
+SESSION_COLLECTION = None
+SESSION_ID = None
 
 def is_persona_collection_current():
     """
@@ -38,25 +41,18 @@ def is_persona_collection_current():
     except:
         return False
 
-def initialize_collections():
+def create_new_conversation_collection():
+    global SESSION_COLLECTION, SESSION_ID
+    # Use timestamp or short UUID for uniqueness
+    unique_id = str(uuid.uuid4())[:8]
+    SESSION_ID = f"session_{unique_id}"
+    
+    SESSION_COLLECTION = chroma_client.get_or_create_collection(name=SESSION_ID)
+    print(f"Created new conversation collection: {SESSION_ID}")
+
+def initialize_persona_collection():
     """Initialize or update collections as needed."""
-    global conversation_collection, persona_collection
-    
-    # Always clear conversation history
-    try:
-        chroma_client.delete_collection(name="conversation_history")
-    except:
-        pass
-    
-    conversation_collection = chroma_client.create_collection(
-        name="conversation_history",
-        metadata={
-            "hnsw:space": "cosine",
-            "hnsw:construction_ef": 200,
-            "hnsw:search_ef": 100,
-            "hnsw:M": 64
-        }
-    )
+    global persona_collection
     
     # Check persona collection
     if not is_persona_collection_current():
@@ -134,15 +130,18 @@ def generate_response_for_persona(persona_name, idea, context):
 
 def store_message_in_chroma(persona_name, message):
     """
-    Stores the given message in the Chroma collection, using the persona name in metadata.
+    Stores the given message in the (session-specific) Chroma collection, using the persona name in metadata.
     """
+    if SESSION_COLLECTION is None:
+        raise ValueError("SESSION_COLLECTION is not initialized.")
+    
     embedding = get_openai_embedding(message)
     doc_id = str(uuid.uuid4())  # generate a unique ID
 
-    conversation_collection.add(
+    SESSION_COLLECTION.add(
         documents=[message],
         embeddings=[embedding],
-        metadatas=[{"persona": persona_name}],
+        metadatas=[{"persona": persona_name, "session_id": SESSION_ID}],
         ids=[doc_id]
     )
 
@@ -330,12 +329,14 @@ def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=
 
 def retrieve_relevant_context(query_text: str, k=5):
     """
-    Retrieves the top k most relevant documents from Chroma for the given query.
-    We'll embed the query, then do a similarity search.
+    Retrieves the top k most relevant documents from the session-specific conversation collection.
     """
-    query_embedding = get_openai_embedding(query_text)
+    if SESSION_COLLECTION is None:
+        return ""
     
-    results = conversation_collection.query(
+    query_embedding = get_openai_embedding(query_text)
+
+    results = SESSION_COLLECTION.query(
         query_embeddings=[query_embedding],
         n_results=k
     )
@@ -401,8 +402,11 @@ def synthesize_final_output(conversation_history, persona_names, idea):
     return completion.choices[0].message.content.strip()
 
 def main():
+    # STEP 1: Create a new conversation collection
+    create_new_conversation_collection()
+    
     # Initialize collections (only recreates what's necessary)
-    initialize_collections()
+    initialize_persona_collection()
 
     # Step 2: Store the extended persona definitions (only once, or when updated; uncomment when needing to update).
     store_personas_in_chroma(PERSONA_LIBRARY)
