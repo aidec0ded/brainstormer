@@ -9,35 +9,77 @@ client = OpenAI()
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 
-def clear_conversation_collection():
-    """Wipes all records in the conversation_history collection."""
-    global conversation_collection
-    results = conversation_collection.get()
-    if results and results['ids']:
-        conversation_collection.delete(
-            ids=results['ids']
+def is_persona_collection_current():
+    """
+    Checks if the persona collection exists and is up to date.
+    Returns True if collection exists and matches current PERSONA_LIBRARY.
+    """
+    try:
+        # Try to get the collection
+        collection = chroma_client.get_collection(name="persona_library")
+        
+        # Get all stored personas
+        results = collection.get()
+        stored_personas = {
+            meta["persona_name"]: doc 
+            for meta, doc in zip(results["metadatas"], results["documents"])
+        }
+        
+        # Check if all current personas exist and match
+        for persona in PERSONA_LIBRARY:
+            name = persona["name"]
+            if name not in stored_personas:
+                return False
+            # Check if description matches
+            if stored_personas[name] != persona["desc"]:
+                return False
+                
+        return True
+    except:
+        return False
+
+def initialize_collections():
+    """Initialize or update collections as needed."""
+    global conversation_collection, persona_collection
+    
+    # Always clear conversation history
+    try:
+        chroma_client.delete_collection(name="conversation_history")
+    except:
+        pass
+    
+    conversation_collection = chroma_client.create_collection(
+        name="conversation_history",
+        metadata={
+            "hnsw:space": "cosine",
+            "hnsw:construction_ef": 200,
+            "hnsw:search_ef": 100,
+            "hnsw:M": 64
+        }
+    )
+    
+    # Check persona collection
+    if not is_persona_collection_current():
+        print("Initializing persona collection (this may take a moment)...")
+        try:
+            chroma_client.delete_collection(name="persona_library")
+        except:
+            pass
+            
+        persona_collection = chroma_client.create_collection(
+            name="persona_library",
+            metadata={
+                "hnsw:space": "cosine",
+                "hnsw:construction_ef": 200,
+                "hnsw:search_ef": 100,
+                "hnsw:M": 64
+            }
         )
-
-# Create or get collections with adjusted HNSW parameters
-conversation_collection = chroma_client.get_or_create_collection(
-    name="conversation_history",
-    metadata={
-        "hnsw:space": "cosine", 
-        "hnsw:M": 64,  # Increased to 64
-        "hnsw:ef_construction": 200,  # Increased for better accuracy
-        "hnsw:ef_search": 100  # Added explicit search parameter
-    }
-)
-
-persona_collection = chroma_client.get_or_create_collection(
-    name="persona_library",
-    metadata={
-        "hnsw:space": "cosine", 
-        "hnsw:M": 64,  # Increased to 64
-        "hnsw:ef_construction": 200,  # Increased for better accuracy
-        "hnsw:ef_search": 100  # Added explicit search parameter
-    }
-)
+        store_personas_in_chroma(PERSONA_LIBRARY)
+        print("Persona collection initialized!")
+    else:
+        print("Using existing persona collection...")
+        persona_collection = chroma_client.get_collection(name="persona_library")
 
 def get_openai_embedding(text: str) -> list:
     """
@@ -359,11 +401,11 @@ def synthesize_final_output(conversation_history, persona_names, idea):
     return completion.choices[0].message.content.strip()
 
 def main():
-    # Step 1: Clear old data in conversation_collection at startup
-    clear_conversation_collection()
+    # Initialize collections (only recreates what's necessary)
+    initialize_collections()
 
     # Step 2: Store the extended persona definitions (only once, or when updated; uncomment when needing to update).
-    # store_personas_in_chroma(PERSONA_LIBRARY)
+    store_personas_in_chroma(PERSONA_LIBRARY)
     
     # Step 3: Ask the user for the idea.
     user_idea = input("What's your idea?\n> ")
