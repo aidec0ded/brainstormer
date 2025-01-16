@@ -150,6 +150,14 @@ PERSONA_LIBRARY = [
         "style_keywords": ["Engaging", "Interactive", "Playful"],
     }
 ]
+def clear_conversation_collection():
+    """Wipes all records in the conversation_history collection."""
+    global conversation_collection
+    results = conversation_collection.get()
+    if results and results['ids']:
+        conversation_collection.delete(
+            ids=results['ids']
+        )
 
 # Create or get a collection for storing the conversation
 conversation_collection = chroma_client.get_or_create_collection(name="conversation_history")
@@ -468,13 +476,16 @@ def synthesize_final_output(conversation_history, persona_names, idea):
     return completion.choices[0].message.content.strip()
 
 def main():
-    # Step 1: Store the extended persona definitions (only once, or when updated).
-    store_personas_in_chroma(PERSONA_LIBRARY)
+    # Step 1: Clear old data in conversation_collection at startup
+    clear_conversation_collection()
+
+    # Step 2: Store the extended persona definitions (only once, or when updated; uncomment when needing to update).
+    # store_personas_in_chroma(PERSONA_LIBRARY)
     
-    # Step 2: Ask the user for the idea.
+    # Step 3: Ask the user for the idea.
     user_idea = input("What's your idea?\n> ")
 
-    # Step 3: Ask how they want to select personas
+    # Step 4: Ask how they want to select personas
     print("How would you like to select personas?")
     print("1. List all available personas and pick any number")
     print("2. Describe what you're looking for, and we'll do a semantic search")
@@ -498,18 +509,7 @@ def main():
         print("No personas selected. Exiting.")
         return
 
-    # # 3) Let the user pick from the persona library
-    # print("Available personas in library:")
-    # for i, p in enumerate(PERSONA_LIBRARY, start=1):
-    #     print(f"{i}. {p['name']}")
-    
-    # selected_indices = input("Pick 3 personas by entering indices separated by commas (e.g., 1,3,5):\n> ")
-    # selected_indices = [int(x.strip()) for x in selected_indices.split(",")]
-
-    # # 4) Extract the persona names
-    # selected_persona_names = [PERSONA_LIBRARY[i-1]["name"] for i in selected_indices]
-
-    # Step 4: Run the brainstorming loop
+    # Step 5: Run the brainstorming loop
     conversation_history = run_brainstorming_with_personas(
         persona_names=selected_personas,
         idea=user_idea,
@@ -517,7 +517,7 @@ def main():
         k=3
     )
 
-    # 6) Print out the final conversation in round-robin order
+    # Step 6: Print out the final conversation in round-robin order
     # Get the number of turns from the first persona's history
     total_turns = len(conversation_history[selected_personas[0]])
     num_personas = len(selected_personas)
@@ -536,7 +536,7 @@ def main():
             print(f"\n{persona_name}, Turn {round_number + 1}:")
             print(f"{conversation_history[persona_name][round_number]}\n")
 
-    # 7. Synthesize final output
+    # Step 7. Synthesize final output
     final_output = synthesize_final_output(conversation_history, selected_personas, user_idea)
     print("\n=== FINAL OUTPUT ===")
     print(final_output)
