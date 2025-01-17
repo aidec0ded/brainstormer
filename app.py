@@ -247,6 +247,55 @@ def store_archive_message(persona_name, message):
         ids=[doc_id]
     )
 
+def store_persona_learned_embedding(persona_name, conversation_history):
+    """
+    Summarizes how a persona performed or evolved in this session, 
+    then stores a new 'learned embedding' for them in 'persona_library'.
+    """
+    # 1) Generate a summary or reflection
+    # We can pass the conversation_history specifically for this persona
+    persona_dialogue = conversation_history.get(persona_name, [])
+    dialogue_text = "\n\n".join(persona_dialogue)
+
+    system_prompt = (
+        "You are an analyzer for persona evolution. The user has a conversation where this persona participated. "
+        "Summarize how the persona expressed themselves, new insights, or unique traits that emerged. "
+        "Output a refined persona summary, focusing on new knowledge or style changes observed in the conversation."
+    )
+
+    prompt_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Persona Name: {persona_name}\n\nConversation:\n{dialogue_text}"}
+    ]
+    
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=prompt_messages,
+        max_tokens=500,
+        temperature=0.7
+    )
+
+    learned_summary = completion.choices[0].message.content.strip()
+
+    # 2) Embed and store in persona_library with a special doc_id
+    learned_emb = get_openai_embedding(learned_summary)
+    doc_id = f"persona-{persona_name.lower().replace(' ', '-')}-learned-{SESSION_ID}"
+
+    metadata = {
+        "persona_name": persona_name,
+        "learned_from_session": SESSION_ID,
+        "field_name": "learned_summary"
+    }
+
+    persona_collection.add(
+        documents=[learned_summary],
+        embeddings=[learned_emb],
+        metadatas=[metadata],
+        ids=[doc_id]
+    )
+
+    print(f"Stored learned embedding for {persona_name} from session {SESSION_ID}.\nSummary:\n{learned_summary}\n")
+
 def search_previous_sessions(user_query, k=5):
     """
     Searches the entire archives for relevant conversation snippets.
@@ -448,18 +497,30 @@ def retrieve_persona_by_name(persona_name: str) -> str:
         # Already fetched in this session
         return PERSONA_CACHE[persona_name]
 
-    # Perform a naive similarity search:
-    emb = get_openai_embedding(persona_name)
-    results = persona_collection.query(query_embeddings=[emb], n_results=1)
-    
-    if results and results['documents']:
-        persona_desc = results['documents'][0][0]  # first doc of first query
-    else:
-        persona_desc = ""
+    # 1) Find the doc with field_name=desc
+    # 2) Also find docs with field_name=learned_summary
+    # 3) Combine them
+    # We'll do a naive approach here for brevity:
+    query_text = f"{persona_name} learned_summary desc"
+    emb = get_openai_embedding(query_text)
+    results = persona_collection.query(
+        query_embeddings=[emb],
+        n_results=5
+    )
+
+    # parse out the best match for "desc" and also any "learned_summary"
+    # for simplicity, just combine them
+    combined_desc = ""
+    for docs, metas in zip(results["documents"], results["metadatas"]):
+        for doc, meta in zip(docs, metas):
+            if meta.get("persona_name") == persona_name:
+                # e.g. if "field_name" in ["desc","learned_summary"]
+                if meta.get("field_name") in ("desc", "learned_summary"):
+                    combined_desc += doc + "\n---\n"
     
     # Store in cache for future lookups
-    PERSONA_CACHE[persona_name] = persona_desc
-    return persona_desc
+    PERSONA_CACHE[persona_name] = combined_desc
+    return combined_desc
 
 def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=3):
     """
@@ -633,6 +694,11 @@ def main():
 
     # Step 8. Synthesize final output
     final_output = synthesize_final_output(conversation_history, selected_personas, user_idea)
+
+    # Step 9: For each persona in the session, store a learned embedding
+    for persona_name in selected_personas:
+        store_persona_learned_embedding(persona_name, conversation_history)
+    
     print("\n=== FINAL OUTPUT ===")
     print(final_output)
 
