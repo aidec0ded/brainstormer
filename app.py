@@ -163,33 +163,65 @@ def store_personas_in_chroma(personas):
     """
     for p in personas:
         persona_name = p["name"]
-        persona_desc = p["desc"]
-        persona_sb = p["short_bio"]
-        persona_de = ", ".join(p["domain_expertise"])  # Convert list to string
-        persona_pt = ", ".join(p["personality_traits"])  # Convert list to string
-        persona_rf = p["role_function"]
-        persona_exp = p["experience_level"]
-        persona_kw = ", ".join(p["style_keywords"])  # Convert list to string
-
-        emb = get_openai_embedding(persona_desc) 
-        doc_id = f"persona-{persona_name.lower().replace(' ', '-')}" 
-        
         metadata = {
             "persona_name": persona_name,
-            "short_bio": persona_sb,
-            "domain_expertise": persona_de,
-            "personality_traits": persona_pt,
-            "role_function": persona_rf,
-            "experience_level": persona_exp,
-            "style_keywords": persona_kw
+                "short_bio": p["short_bio"],
+                "domain_expertise": p["domain_expertise"],      # LIST 
+                "personality_traits": p["personality_traits"],  # LIST
+                "role_function": p["role_function"],
+                "experience_level": p["experience_level"],
+                "style_keywords": p["style_keywords"]           # LIST
         }
+
+        emb = get_openai_embedding(p["desc"]) 
+        doc_id = f"persona-{persona_name.lower().replace(' ', '-')}" 
+        
         
         persona_collection.add(
-            documents=[persona_desc],
+            documents=[p["desc"]],
             embeddings=[emb],
             metadatas=[metadata],
             ids=[doc_id]
         )
+
+def store_persona_fields_in_chroma(personas):
+    """
+    For each persona, embed relevant fields separately and store them in 'persona_library'.
+    Each field is a separate record, letting us do field-specific searches.
+    """
+    for p in personas:
+        persona_name = p["name"]
+        
+        # We'll store these fields separately
+        fields_to_embed = {
+            "desc": p["desc"],
+            "short_bio": p["short_bio"],
+            "domain_expertise": ", ".join(p["domain_expertise"]),
+            "personality_traits": ", ".join(p["personality_traits"]),
+            "role_function": p["role_function"],
+            "experience_level": p["experience_level"],
+            "style_keywords": ", ".join(p["style_keywords"])
+        }
+        
+        for field_name, field_text in fields_to_embed.items():
+            # Skip if empty
+            if not field_text:
+                continue
+            
+            emb = get_openai_embedding(field_text)
+            doc_id = f"persona-{persona_name.lower().replace(' ', '-')}-{field_name}"
+            
+            metadata = {
+                "persona_name": persona_name,
+                "field_name": field_name,
+            }
+            # We might also carry the field_text in 'documents' to reconstruct or debug
+            persona_collection.add(
+                documents=[field_text],
+                embeddings=[emb],
+                metadatas=[metadata],
+                ids=[doc_id]
+            )
 
 def store_archive_message(persona_name, message):
     """
@@ -308,6 +340,81 @@ def select_personas_by_semantic_search():
     except ValueError:
         print("Invalid input. Returning empty selection.")
         return []
+
+def manager_agent_select_personas(user_idea: str, all_personas: list, top_k=5):
+    """
+    Asks GPT-4 to figure out which domains/roles are needed for the user's idea.
+    Then queries 'persona_library' for best matching personas by domain_expertise or role_function.
+    Returns a list of persona names.
+    """
+    # 1) Summarize or label the user_idea
+    manager_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "You are a 'manager agent' that analyzes a new idea and decides which roles "
+                "or expertise are crucial to evaluate and develop it. "
+                "You'll output a JSON list of relevant domain_expertise or role_functions."
+            )
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User Idea:\n{user_idea}\n\n"
+                "Identify which 3-5 domain_expertise or role_functions are most relevant for exploring or executing this idea. "
+                "Return them as JSON, e.g.:\n"
+                '[\n  "AI Ethics",\n  "Hardware Engineering"\n]\n'
+            )
+        }
+    ]
+
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=manager_prompt,
+        max_tokens=300,
+        temperature=0.4
+    )
+
+    # 2) Parse the manager agent's output
+    manager_response = completion.choices[0].message.content.strip()
+    print(f"Manager Agent's Raw Output:\n{manager_response}\n")
+
+    import json
+    try:
+        needed_domains = json.loads(manager_response)
+        if not isinstance(needed_domains, list):
+            needed_domains = []
+    except:
+        needed_domains = []
+    
+    if not needed_domains:
+        # Fallback: if manager agent doesn't parse well, just return empty or let user pick
+        print("Manager agent did not return a valid list. No domain_expertise found.")
+        return []
+    
+    # 3) We search the 'persona_library' for these domains
+    results = persona_collection.query(
+        query_texts=["Selecting persona for the user's idea"],
+        n_results=10,
+        where={
+            "domain_expertise": {"$in": needed_domains}
+        }
+    )
+
+    # Extract persona names from the results
+    matching_personas = []
+    if results and results['metadatas']:
+        matching_personas = [
+            meta['persona_name'] 
+            for meta in results['metadatas'][0]  # First query's metadata
+        ]
+
+    # If we found too many, limit to top_k by also doing a similarity search
+    if len(matching_personas) > top_k:
+        matching_personas = matching_personas[:top_k]
+
+    print(f"Manager Agent suggested: {matching_personas}")
+    return matching_personas
 
 def auto_select_personas_based_on_idea(user_idea):
     """
@@ -477,7 +584,7 @@ def main():
     print("How would you like to select personas?")
     print("1. List all available personas and pick any number")
     print("2. Describe what you're looking for, and we'll do a semantic search")
-    print("3. Let the system read your idea and automatically select relevant personas")
+    print("3. Manager Agent picks for me.")
     choice = input("Enter 1, 2, or 3:\n> ").strip()
 
     if choice == "1":
@@ -488,7 +595,7 @@ def main():
         selected_personas = select_personas_by_semantic_search()
     elif choice == "3":
         # (C) Auto-select based on the idea
-        selected_personas = auto_select_personas_based_on_idea(user_idea)
+        selected_personas = manager_agent_select_personas(user_idea, PERSONA_LIBRARY)
     else:
         print("Invalid choice. Defaulting to listing all personas.")
         selected_personas = select_personas_by_list()
