@@ -3,6 +3,8 @@ import chromadb
 import uuid 
 import datetime
 import logging
+import re
+import json
 from personas import PERSONA_LIBRARY
 
 # Initialize OpenAI client
@@ -163,19 +165,19 @@ def store_personas_in_chroma(personas):
     """
     for p in personas:
         persona_name = p["name"]
+        # Convert lists to comma-separated strings for metadata
         metadata = {
             "persona_name": persona_name,
-                "short_bio": p["short_bio"],
-                "domain_expertise": p["domain_expertise"],      # LIST 
-                "personality_traits": p["personality_traits"],  # LIST
-                "role_function": p["role_function"],
-                "experience_level": p["experience_level"],
-                "style_keywords": p["style_keywords"]           # LIST
+            "short_bio": p["short_bio"],
+            "domain_expertise": ", ".join(p["domain_expertise"]),      # Convert list to string
+            "personality_traits": ", ".join(p["personality_traits"]),  # Convert list to string
+            "role_function": p["role_function"],
+            "experience_level": p["experience_level"],
+            "style_keywords": ", ".join(p["style_keywords"])          # Convert list to string
         }
 
         emb = get_openai_embedding(p["desc"]) 
         doc_id = f"persona-{persona_name.lower().replace(' ', '-')}" 
-        
         
         persona_collection.add(
             documents=[p["desc"]],
@@ -264,7 +266,7 @@ def store_persona_learned_embedding(persona_name, conversation_history):
     )
 
     prompt_messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "developer", "content": system_prompt},
         {"role": "user", "content": f"Persona Name: {persona_name}\n\nConversation:\n{dialogue_text}"}
     ]
     
@@ -315,6 +317,59 @@ def search_previous_sessions(user_query, k=5):
         persona = meta.get("persona_name")
         print(f"\nMatch {i+1}: from session {sid}, persona {persona}")
         print(f"Snippet: {doc[:200]}...")
+
+def parse_domains_from_manager_output(manager_text: str) -> list:
+    """
+    Attempts to parse the manager agent's textual output for domain expertise or roles.
+    
+    The manager agent might respond in multiple formats:
+    - JSON list, e.g.: ["AI Ethics", "Hardware Engineering"]
+    - Simple text listing domain(s)
+    - A bullet-point list
+    This function tries to handle these common formats and return a Python list of strings.
+    
+    If no recognizable domains are found, returns an empty list.
+    """
+    manager_text = manager_text.strip()
+    
+    # 1) Try to interpret the entire text as JSON
+    #    e.g. the manager might have responded with exactly ["AI Ethics","Hardware Engineering"]
+    try:
+        possible_list = json.loads(manager_text)
+        if isinstance(possible_list, list):
+            # Make sure each item is a string
+            domain_list = [str(item).strip() for item in possible_list]
+            # Filter out empties
+            return [d for d in domain_list if d]
+    except:
+        pass  # Not valid JSON or the manager gave a more free-form text
+    
+    # 2) If not valid JSON, search for bullet points or lines
+    #    e.g. "1) AI Ethics\n2) Hardware Engineering"
+    lines = manager_text.splitlines()
+    possible_domains = []
+    for line in lines:
+        # Remove numbering or bullet points
+        line = line.strip().lstrip("0123456789) .-").strip()
+        # If line is short or doesn't contain typical domain words, skip it
+        # This is optional – up to you how lenient you want to be
+        if len(line) > 2:
+            possible_domains.append(line)
+    
+    if possible_domains:
+        return possible_domains
+    
+    # 3) As a fallback, do a simple regex search for bracketed or quoted items
+    #    e.g. "Something like [AI Ethics, Hardware Engineering]"
+    bracket_pattern = r"\[([^\]]+)\]"
+    match = re.search(bracket_pattern, manager_text)
+    if match:
+        inside_brackets = match.group(1).split(",")
+        domain_list = [d.strip() for d in inside_brackets]
+        return [d for d in domain_list if d]
+
+    # 4) If no patterns matched, return empty
+    return []
 
 def select_personas_by_list():
     # Display all available personas with short bios
@@ -399,7 +454,7 @@ def manager_agent_select_personas(user_idea: str, all_personas: list, top_k=5):
     # 1) Summarize or label the user_idea
     manager_prompt = [
         {
-            "role": "system",
+            "role": "developer",
             "content": (
                 "You are a 'manager agent' that analyzes a new idea and decides which roles "
                 "or expertise are crucial to evaluate and develop it. "
@@ -465,25 +520,278 @@ def manager_agent_select_personas(user_idea: str, all_personas: list, top_k=5):
     print(f"Manager Agent suggested: {matching_personas}")
     return matching_personas
 
-def auto_select_personas_based_on_idea(user_idea):
+
+def manager_agent_create_persona_if_needed(user_idea: str, required_domains: list) -> list:
     """
-    Automatically picks the top 3 most relevant personas for the user's idea,
-    based on semantic similarity to the idea.
+    1) Attempt to find personas with these required_domains in metadata.
+    2) If none found, create new personas to fill the gaps.
+    3) Return list of persona names to use (both existing and new).
     """
-    idea_emb = get_openai_embedding(user_idea)
+    # First try to find some existing relevant personas via semantic search
+    query_text = f"Expert in: {', '.join(required_domains)}"
     results = persona_collection.query(
-        query_embeddings=[idea_emb],
-        n_results=3  # auto-select top 3
+        query_embeddings=[get_openai_embedding(query_text)],
+        n_results=3
+    )
+    
+    existing_personas = []
+    if results and results['metadatas']:
+        existing_personas = [meta['persona_name'] for meta in results['metadatas'][0]]
+    
+    if existing_personas:
+        print(f"Found existing relevant personas: {existing_personas}")
+    
+    # If we don't have enough personas, create new ones
+    if len(existing_personas) < 2:  # Ensure we have at least 2 personas
+        print("Creating new personas to complement the conversation...")
+        
+        # Determine how many new personas to create (2-3 total)
+        num_new_needed = min(3 - len(existing_personas), len(required_domains))
+        
+        creation_prompt = [
+            {
+                "role": "developer",
+                "content": (
+                    "You are a persona creator for a collaborative brainstorming system. "
+                    "Create unique personas with different expertise and perspectives that would be valuable "
+                    f"for discussing this idea: {user_idea}\n\n"
+                    f"Create {num_new_needed} different personas, each specializing in different aspects "
+                    f"of these domains: {', '.join(required_domains)}\n\n"
+                    "Return a JSON array of personas, each with these fields:\n"
+                    "- name: A memorable, realistic name\n"
+                    "- short_bio: A one-line bio\n"
+                    "- desc: A detailed description of their expertise and perspective (2-3 paragraphs)\n"
+                    "- domain_expertise: List of their specific expertise areas\n"
+                    "- personality_traits: List of 3-5 defining traits\n"
+                    "- role_function: Their primary professional role\n"
+                    "- experience_level: Senior, Mid-level, or Expert\n"
+                    "- style_keywords: List of words that characterize their communication style\n\n"
+                    "Make each persona distinct and specialized, with clear areas of expertise."
+                )
+            }
+        ]
+        
+        completion = client.chat.completions.create(
+            model="gpt-4",  # Using most capable model for persona creation
+            messages=creation_prompt,
+            max_tokens=2000,
+            temperature=0.7
+        )
+
+        try:
+            new_personas = json.loads(completion.choices[0].message.content)
+            for persona in new_personas:
+                store_new_persona_in_chroma(persona)
+                existing_personas.append(persona["name"])
+        except json.JSONDecodeError as e:
+            print(f"Error parsing persona JSON: {e}")
+            print("Raw response:", completion.choices[0].message.content)
+            # Instead of using fallback persona, we could retry or raise an error
+            raise ValueError("Failed to create valid personas")
+
+    return existing_personas
+
+def create_gap_filling_persona(user_idea: str, required_domains: list) -> list:
+    """
+    Similar to manager_agent_create_persona_if_needed but specifically for filling gaps
+    during conversation. Only creates one persona at a time if needed.
+    """
+    # First try to find an existing relevant persona via semantic search
+    query_text = f"Expert in: {', '.join(required_domains)}"
+    results = persona_collection.query(
+        query_embeddings=[get_openai_embedding(query_text)],
+        n_results=1
+    )
+    
+    if results and results['metadatas']:
+        persona_name = results['metadatas'][0][0]['persona_name']
+        print(f"Found existing relevant persona for gap: {persona_name}")
+        return [persona_name]
+    
+    # If no existing persona found, create a new one
+    print("Creating new persona to fill expertise gap...")
+    
+    creation_prompt = [
+        {
+            "role": "developer",
+            "content": (
+                "You are a persona creator for a collaborative brainstorming system. "
+                "Create a single unique persona with expertise to fill this gap in the conversation. "
+                f"The original idea being discussed is: {user_idea}\n\n"
+                f"The persona should specialize in these domains: {', '.join(required_domains)}\n\n"
+                "Return a JSON object with these fields:\n"
+                "- name: A memorable, realistic name\n"
+                "- short_bio: A one-line bio\n"
+                "- desc: A detailed description of their expertise and perspective (2-3 paragraphs)\n"
+                "- domain_expertise: List of their specific expertise areas\n"
+                "- personality_traits: List of 3-5 defining traits\n"
+                "- role_function: Their primary professional role\n"
+                "- experience_level: Senior, Mid-level, or Expert\n"
+                "- style_keywords: List of words that characterize their communication style\n\n"
+                "Make the persona specialized and focused on filling the identified gap."
+            )
+        }
+    ]
+    
+    completion = client.chat.completions.create(
+        model="gpt-4",
+        messages=creation_prompt,
+        max_tokens=2000,
+        temperature=0.7
     )
 
-    if not results or not results['metadatas']:
-        print("No matching personas found. Defaulting to empty list.")
-        return []
+    try:
+        new_persona = json.loads(completion.choices[0].message.content)
+        store_new_persona_in_chroma(new_persona)
+        return [new_persona["name"]]
+    except json.JSONDecodeError as e:
+        print(f"Error parsing persona JSON: {e}")
+        print("Raw response:", completion.choices[0].message.content)
+        raise ValueError("Failed to create valid persona")
 
-    top_metadata = results['metadatas'][0]
-    selected_personas = [m['persona_name'] for m in top_metadata]
-    print(f"Automatically selected personas: {selected_personas}")
-    return selected_personas
+def find_personas_by_domains(domains: list, top_k=5) -> list:
+    """
+    Returns a list of persona names that match any of the domains in 'domains'.
+    Using Chroma's metadata filter with '$contains'.
+    """
+    if not domains:
+        return []
+    
+    # Query using the OpenAI embedding and a simpler where clause
+    results = persona_collection.query(
+        query_embeddings=[get_openai_embedding("Retrieving persona by domain expertise")],
+        where={
+            "$or": [
+                {
+                    "domain_expertise": {
+                        "$in": [domain.lower()]  # Case-insensitive matching
+                    }
+                } 
+                for domain in domains
+            ]
+        },
+        n_results=top_k
+    )
+
+    matching_personas = []
+    if results and results['metadatas'] and len(results['metadatas'][0]) > 0:
+        for meta in results['metadatas'][0]:
+            matching_personas.append(meta['persona_name'])
+    return list(set(matching_personas))  # unique
+
+
+def store_new_persona_in_chroma(persona_dict):
+    """
+    Takes a newly minted persona dict and stores it in both ChromaDB and the PERSONA_LIBRARY file.
+    """
+    # ... [previous ChromaDB storage code remains the same] ...
+
+    # Append to PERSONA_LIBRARY file
+    personas_file_path = "personas.py"
+    with open(personas_file_path, 'r') as file:
+        content = file.read()
+    
+    # Find the last entry and ensure it ends with a comma
+    if '}]' in content:
+        content = content.replace('}]', '},')
+    elif '}\n]' in content:
+        content = content.replace('}\n]', '},')
+
+    # Format the new persona as a dictionary string
+    new_persona_str = f"""    {{
+        'name': {repr(persona_dict["name"])},
+        'short_bio': {repr(persona_dict["short_bio"])},
+        'desc': {repr(persona_dict["desc"])},
+        'domain_expertise': {repr(persona_dict["domain_expertise"])},
+        'personality_traits': {repr(persona_dict["personality_traits"])},
+        'role_function': {repr(persona_dict["role_function"])},
+        'experience_level': {repr(persona_dict["experience_level"])},
+        'style_keywords': {repr(persona_dict["style_keywords"])}
+    }}\n]"""
+
+    # Write the updated content
+    with open(personas_file_path, 'w') as file:
+        file.write(content)
+        file.write(new_persona_str)
+
+    print(f"New Persona '{persona_dict['name']}' created and stored in both ChromaDB and PERSONA_LIBRARY.\n")
+
+def manager_agent_decide_personas(user_idea):
+    """
+    Manager agent logic that decides which domain_expertise are needed,
+    then calls manager_agent_create_persona_if_needed.
+    Returns a list of persona names to use.
+    """
+    # Basic manager agent approach:
+    manager_prompt = [
+        {"role": "system", "content": "You are a manager agent deciding domain expertise needed."},
+        {"role": "user", "content": f"User idea:\n{user_idea}\n\nWhich 2-3 domains are needed?"}
+    ]
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=manager_prompt,
+        max_tokens=200,
+        temperature=0.6
+    )
+    # parse manager response as a list of domains
+    domain_list = parse_domains_from_manager_output(completion.choices[0].message.content)
+
+    # Now create or fetch personas
+    persona_names = manager_agent_create_persona_if_needed(user_idea, domain_list)
+    return persona_names
+
+def manager_agent_monitor_conversation(conversation_history, persona_names, user_idea):
+    """
+    Looks at the last round of conversation, checks if there's a domain gap.
+    If there's a gap, create/inject a new persona.
+    Returns possibly updated persona_names if we add a new one.
+    """
+    # First ensure all personas have conversation history entries
+    for persona in persona_names:
+        if persona not in conversation_history:
+            conversation_history[persona] = []
+    
+    # Get last responses, but only for personas who have spoken
+    last_responses = [conversation_history[p][-1] for p in persona_names if conversation_history[p]]
+    
+    # If no responses yet, return without changes
+    if not last_responses:
+        return persona_names
+    
+    # feed that into an LLM prompt
+    monitor_prompt = [
+        {"role": "system", "content": "You are a gap-detecting manager agent."},
+        {"role": "user", "content": (
+            f"User idea: {user_idea}\n\n"
+            f"Recent persona responses:\n{last_responses}\n\n"
+            "Do we have any domain gaps? If so, name them or say 'No Gap' if everything is covered."
+        )}
+    ]
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=monitor_prompt,
+        max_tokens=300,
+        temperature=0.6
+    )
+
+    gap_report = completion.choices[0].message.content.strip()
+    if "No Gap" in gap_report:
+        return persona_names  # no change
+
+    # Otherwise parse gap_report into domain list
+    new_domains = parse_domains_from_manager_output(gap_report)
+    if not new_domains:
+        return persona_names
+
+    # create new persona if none exist
+    new_personas = create_gap_filling_persona(user_idea, new_domains)
+    # add them to persona_names and initialize their conversation history
+    for new_persona in new_personas:
+        if new_persona not in persona_names:
+            persona_names.append(new_persona)
+            conversation_history[new_persona] = []
+            
+    return persona_names
 
 PERSONA_CACHE = {}  # { persona_name: persona_desc }
 
@@ -549,7 +857,21 @@ def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=
         conversation_history[persona_name].append(next_response)
         store_message_in_chroma(persona_name, next_response)
 
+        # After each complete round (when all personas have spoken), check for gaps
+        if (turn_index + 1) % num_personas == 0:
+            updated_persona_names = manager_agent_monitor_conversation(conversation_history, persona_names, idea)
+            if len(updated_persona_names) > len(persona_names):
+                # New persona(s) were added
+                persona_names = updated_persona_names
+                num_personas = len(persona_names)
+                total_turns = num_personas * total_turns_each
+                # Initialize conversation history for new personas
+                for name in persona_names:
+                    if name not in conversation_history:
+                        conversation_history[name] = []
+
     return conversation_history
+
 
 def retrieve_relevant_context(query_text: str, k=5):
     """
@@ -588,8 +910,8 @@ def synthesize_final_output(conversation_history, persona_names, idea):
         
         # Only add to transcript if this persona still has turns left
         if round_number < len(conversation_history[persona_name]):
-            # Find matching description for this persona from PERSONA_LIBRARY
-            persona_desc = next(p["desc"] for p in PERSONA_LIBRARY if p["name"] == persona_name)
+            # Get persona description from ChromaDB instead of PERSONA_LIBRARY
+            persona_desc = retrieve_persona_by_name(persona_name)
             chat_transcript += f"\n--- Turn {turn_index + 1}: {persona_name} ({persona_desc}) ---\n"
             chat_transcript += f"{conversation_history[persona_name][round_number]}\n"
 
@@ -610,7 +932,7 @@ def synthesize_final_output(conversation_history, persona_names, idea):
                 "Please provide a comprehensive proposal in the following structure:\n\n"
                 "1. Executive Summary\n2. Situation Analysis\n3. Proposed Solution\n4. "
                 "Implementation Roadmap with Timelines\n5. Financials/ROI\n6. Risk Mitigation\n\n"
-                "Use the conversation transcript and the user’s original idea as context."
+                "Use the conversation transcript and the user's original idea as context."
                 "Whenever it supports the proposal and brings value, include bullet points, tables, and other visual elements."
                 "Identify all of the potential features mentioned in the conversation transcript and categorize them and list them as bullet points."
             )
@@ -624,6 +946,7 @@ def synthesize_final_output(conversation_history, persona_names, idea):
         temperature=0.6
     )
     return completion.choices[0].message.content.strip()
+
 
 def main():
     # STEP 1: Create a new conversation collection
@@ -656,7 +979,7 @@ def main():
         selected_personas = select_personas_by_semantic_search()
     elif choice == "3":
         # (C) Auto-select based on the idea
-        selected_personas = manager_agent_select_personas(user_idea, PERSONA_LIBRARY)
+        selected_personas = manager_agent_decide_personas(user_idea)
     else:
         print("Invalid choice. Defaulting to listing all personas.")
         selected_personas = select_personas_by_list()
