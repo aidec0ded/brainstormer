@@ -278,5 +278,5 @@ PERSONA_LIBRARY = [
         'role_function': 'Community Advocate', 
         'experience_level': 'Intermediate', 
         'style_keywords': ['Inclusive', 'User-first', 'Practical']
-    }
+    },
 ]
