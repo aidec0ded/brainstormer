@@ -793,6 +793,46 @@ def manager_agent_monitor_conversation(conversation_history, persona_names, user
             
     return persona_names
 
+def reasoning_agent_review(conversation_history, persona_names):
+    """
+    The reasoning agent reads the entire conversation so far,
+    highlights contradictions or suggestions to refine.
+    Returns a short string summarizing them.
+    """
+    # Convert conversation_history into a text block
+    transcript = ""
+    for pn in persona_names:
+        # Just the last response or the entire conversation, up to you
+        for i, resp in enumerate(conversation_history[pn], start=1):
+            transcript += f"{pn} (turn {i}): {resp}\n"
+
+    # Now call GPT-4 to find contradictions, improvements
+    agent_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "You are a reasoning agent. Your job is to spot inconsistencies, "
+                "contradictions, or areas needing further exploration. Provide concise bullet points."
+            )
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Conversation so far:\n{transcript}\n\n"
+                "List any contradictions or improvements that should be addressed next."
+            )
+        }
+    ]
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=agent_prompt,
+        max_tokens=400,
+        temperature=0.5
+    )
+
+    critique = completion.choices[0].message.content.strip()
+    return critique
+
 PERSONA_CACHE = {}  # { persona_name: persona_desc }
 
 def retrieve_persona_by_name(persona_name: str) -> str:
@@ -830,7 +870,7 @@ def retrieve_persona_by_name(persona_name: str) -> str:
     PERSONA_CACHE[persona_name] = combined_desc
     return combined_desc
 
-def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=3):
+def run_brainstorming_with_reasoning(persona_names, idea, total_turns_each=10, k=3):
     """
     'persona_names' is a list of persona names from our persona library in Chroma.
     Each persona gets 'total_turns_each' opportunities to speak.
@@ -849,6 +889,15 @@ def run_brainstorming_with_personas(persona_names, idea, total_turns_each=10, k=
         
         # Retrieve top k relevant docs from the conversation collection
         relevant_context = retrieve_relevant_context(retrieval_query, k=k)
+
+        # Reasoning agent critique so far
+        critique = reasoning_agent_review(conversation_history, persona_names)
+
+        # Combine everything in the 'context'
+        combined_context = (
+            f"{relevant_context}\n\n"
+            f"Reasoning Agent Critique:\n{critique}"
+        )
         
         # Generate persona’s response with their “essence”
         next_response = generate_response_for_persona(persona_name, idea, relevant_context)
@@ -989,7 +1038,7 @@ def main():
         return
 
     # Step 6: Run the brainstorming loop
-    conversation_history = run_brainstorming_with_personas(
+    conversation_history = run_brainstorming_with_reasoning(
         persona_names=selected_personas,
         idea=user_idea,
         total_turns_each=10,
