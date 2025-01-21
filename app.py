@@ -77,9 +77,9 @@ def initialize_persona_collection():
             name="persona_library",
             metadata={
                 "hnsw:space": "cosine",
-                "hnsw:construction_ef": 200,
-                "hnsw:search_ef": 100,
-                "hnsw:M": 64
+                "hnsw:construction_ef": 250,
+                "hnsw:search_ef": 150,
+                "hnsw:M": 32
             }
         )
         store_personas_in_chroma(PERSONA_LIBRARY)
