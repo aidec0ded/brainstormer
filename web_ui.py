@@ -88,11 +88,11 @@ def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic
             output += f"\nTurn {turn_index + 1} – {persona}: {history[persona][round_number]}\n"
             yield output
 
-    output += "📝 Generating final proposal...\n"
+    output += "\n📝 Generating final proposal...\n"
     yield output
     final_output = synthesize_final_output(history, selected_personas, user_idea)
-    yield output + "✅ Final Proposal:\n\n" + final_output
-    yield output + "✅ Final Proposal: " + final_output
+    output += "\n✅ Final Proposal:\n\n" + final_output
+    yield output
 
 # 🧱 Gradio UI
 with gr.Blocks(title="Brainstormer", css="""
@@ -154,13 +154,14 @@ label[title] {
             clear_btn = gr.Button("Clear")
 
         with gr.Column(scale=2):
-            final_output = gr.Textbox(
-                label="Progress, Brainstorming Transcript, and Final Proposal",
-                lines=35,
-                show_copy_button=True
+            final_output = gr.Markdown(
+                label="Progress, Brainstorming Transcript, and Final Proposal"
             )
             download_button = gr.Button("📥 Download Final Proposal")
             download_file = gr.File(label="Download Link")
+            final_output_copy = gr.Textbox(
+                visible=False, show_copy_button=True
+            )
 
     def toggle_inputs(mode):
         return (
@@ -201,3 +202,4 @@ label[title] {
 
     demo.launch(share=True, inline=False, height=900)
 
+# main previous 
