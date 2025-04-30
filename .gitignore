@@ -8,6 +8,7 @@ venv/
 .venv/
 HOME/
 .pyenv/
+.gradio/
 
 # Byte-compiled / optimized / DLL files
 *.pyc
