@@ -85,7 +85,7 @@ def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic
         persona = selected_personas[turn_index % len(selected_personas)]
         round_number = turn_index // len(selected_personas)
         if round_number < len(history[persona]):
-            output += f"Turn {turn_index + 1} – {persona}: {history[persona][round_number]}\n"
+            output += f"\nTurn {turn_index + 1} – {persona}: {history[persona][round_number]}\n"
             yield output
 
     output += "📝 Generating final proposal...\n"
