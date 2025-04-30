@@ -31,7 +31,7 @@ def download_final_output(text):
 
 # ✅ Main logic with streaming output
 def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic_description):
-    output = "🔄 Setting up environment...\n"
+    output = "🔄 Setting up environment... \n"
     yield output
     create_new_conversation_collection()
     initialize_persona_collection()
@@ -61,7 +61,7 @@ def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic
             return
 
     else:
-        output += "🧠 Letting the manager agent select personas...\n"
+        output += "\n🧠 Letting the manager agent select personas... \n"
         yield output
         selected_personas = manager_agent_decide_personas(user_idea)
 
@@ -69,8 +69,10 @@ def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic
         yield output + "❌ No personas were selected."
         return
 
-    output += f"✅ Selected personas: {', '.join(selected_personas)}\n"
-    output += "💬 Brainstorming session in progress...\n"
+    output += f"\n✅ Selected personas: {', '.join(selected_personas)} \n"
+    yield output
+
+    output += "\n💬 Brainstorming session in progress... \n"
     yield output
 
     history = run_brainstorming_with_reasoning(
@@ -79,7 +81,7 @@ def run_full_session(user_idea, selection_mode, manual_displayed_names, semantic
         total_turns_each=2
     )
 
-    output += "🧠 Brainstorm Transcript:\n"
+    output += "\n🧠 Brainstorm Transcript\n\n"
     total_turns = len(history[selected_personas[0]])
     for turn_index in range(total_turns * len(selected_personas)):
         persona = selected_personas[turn_index % len(selected_personas)]
